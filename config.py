@@ -163,6 +163,7 @@ SOURCE_MAPPING_PATTERNS = {
 SWITCHES_FILE = 'switches.txt'
 TEMPLATE_FILE = 'template.html'
 OUTPUT_FILE = 'build/index.html'
+OBSIDIAN_SWITCHES_FILE = 'build/chrome_switches_review.md'
 PREFS_XML_FILE = 'xml/namespaceprefs.xml'
 CONTENT_FEATURES_XML = 'xml/content__public__common__content__features_8cc.xml'
 BLINK_FEATURES_JSON = 'src/third_party_blink_renderer_platform_runtime_enabled_features.json5'

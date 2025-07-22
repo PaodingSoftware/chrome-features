@@ -24,7 +24,7 @@ from config import (
     CHROME_REPO_BASE_URL, TIMEOUT_SECONDS, DIRECTORIES, CORE_FILES, 
     NAMESPACE_XML_FILES, CHROME_FEATURES_XML_FILES, DOXYGEN_CONFIG,
     SOURCE_MAPPING_PATTERNS, SWITCHES_FILE, TEMPLATE_FILE, OUTPUT_FILE,
-    PREFS_XML_FILE, CONTENT_FEATURES_XML,
+    OBSIDIAN_SWITCHES_FILE, PREFS_XML_FILE, CONTENT_FEATURES_XML,
     BLINK_FEATURES_JSON, BLINK_SETTINGS_JSON
 )
 
@@ -637,6 +637,93 @@ def generate_html(chrome_switches: List[Dict[str, Any]], chrome_features: List[D
         raise
 
 
+def generate_obsidian_switches_review(chrome_switches: List[Dict[str, Any]]) -> None:
+    """Generate Obsidian Markdown file for switches review."""
+    logger.info("Generating Obsidian switches review file...")
+    
+    try:
+        # Create markdown content
+        content = []
+        content.append("# Chrome Switches Review")
+        content.append("")
+        content.append(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        content.append(f"Total switches: {len(chrome_switches)}")
+        content.append("")
+        content.append("## Instructions")
+        content.append("- [ ] Check the checkbox after reviewing each switch")
+        content.append("- [ ] Add notes in the 'Review Notes' column as needed")
+        content.append("- [ ] Use tags like #important, #deprecated, #experimental for categorization")
+        content.append("")
+        
+        # Group switches by source for better organization
+        switches_by_source = {}
+        for switch in chrome_switches:
+            source = switch.get('source', 'Other')
+            if source not in switches_by_source:
+                switches_by_source[source] = []
+            switches_by_source[source].append(switch)
+        
+        # Generate table for each source category
+        checkbox_counter = 1  # Counter for unique checkbox IDs
+        for source in sorted(switches_by_source.keys()):
+            switches = switches_by_source[source]
+            content.append(f"## {source} ({len(switches)} switches)")
+            content.append("")
+            
+            # Table header
+            content.append("| Reviewed | Switch Name | Variable | Description | Review Notes |")
+            content.append("|----------|-------------|----------|-------------|--------------|")
+            
+            # Table rows
+            for switch in sorted(switches, key=lambda x: x['name'].lower()):
+                name = switch['name']
+                variable = switch.get('variable', '')
+                description = switch.get('description', '')
+                
+                # Clean description for table display (remove HTML and newlines)
+                clean_desc = re.sub(r'<[^>]+>', '', description)
+                clean_desc = clean_desc.replace('\n', ' ').replace('\r', '').strip()
+                clean_desc = clean_desc.replace('|', '\\|')  # Escape pipe characters
+                
+                # Limit description length for readability
+                if len(clean_desc) > 100:
+                    clean_desc = clean_desc[:97] + "..."
+                
+                # Generate unique checkbox ID
+                checkbox_id = f"switch_{checkbox_counter:04d}"
+                checkbox_counter += 1
+                
+                content.append(f'| <input type="checkbox" unchecked id="{checkbox_id}"> | `{name}` | `{variable}` | {clean_desc} |  |')
+            
+            content.append("")
+        
+        # Add summary statistics
+        content.append("## Review Progress")
+        content.append("")
+        content.append("### Statistics by Source")
+        for source in sorted(switches_by_source.keys()):
+            count = len(switches_by_source[source])
+            content.append(f"- **{source}**: {count} switches")
+        
+        content.append("")
+        content.append("### Review Checklist")
+        content.append("- [ ] All switches reviewed")
+        content.append("- [ ] Important switches identified and tagged")
+        content.append("- [ ] Deprecated switches noted")
+        content.append("- [ ] Documentation gaps identified")
+        content.append("- [ ] Follow-up actions documented")
+        
+        # Write to file
+        with open(OBSIDIAN_SWITCHES_FILE, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(content))
+        
+        logger.info(f"Obsidian switches review file generated successfully at {OBSIDIAN_SWITCHES_FILE}")
+    
+    except Exception as e:
+        logger.error(f"Error generating Obsidian switches review file: {e}")
+        raise
+
+
 def print_processing_summary(chrome_switches: List, chrome_features: List, 
                            blink_features: List, blink_settings: List, 
                            has_doxygen: bool) -> None:
@@ -646,6 +733,12 @@ def print_processing_summary(chrome_switches: List, chrome_features: List,
     logger.info(f"- {len(chrome_features)} Chrome features")
     logger.info(f"- {len(blink_features)} Blink features")
     logger.info(f"- {len(blink_settings)} Blink settings")
+    
+    logger.info("Generated files:")
+    logger.info(f"- HTML report: {OUTPUT_FILE}")
+    if chrome_switches:
+        logger.info(f"- Obsidian review file: {OBSIDIAN_SWITCHES_FILE}")
+    
     if not has_doxygen:
         logger.warning("Note: Install doxygen to enable Chrome features and preferences parsing")
     logger.info("Processing completed successfully!")
@@ -674,6 +767,10 @@ def main() -> None:
         
         # Generate output
         generate_html(chrome_switches, chrome_features, blink_features, blink_settings, prefs)
+        
+        # Generate Obsidian switches review file if we have switches
+        if chrome_switches:
+            generate_obsidian_switches_review(chrome_switches)
         
         # Print summary
         print_processing_summary(chrome_switches, chrome_features, blink_features, blink_settings, has_doxygen)
