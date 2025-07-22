@@ -1,24 +1,30 @@
 # Chrome Features Parser
 
-A tool to parse and display Chrome browser features, Blink features, Blink settings, and preferences.
+A tool to parse and display Chrome switches, features, Blink features, settings, and preferences from Chrome source code.
 
-## 安装依赖
+## Requirements
+
+- Python 3.x
+- Doxygen (required for XML parsing of Chrome switches and features)
+
+Install Doxygen:
+- **Windows**: Download from [doxygen.nl](https://www.doxygen.nl/download.html) or use `choco install doxygen`
+- **macOS**: `brew install doxygen`
+- **Linux**: `sudo apt-get install doxygen` or equivalent
+
+## Quick Start
 
 ```bash
-pip3 install -r requirements.txt
+pip install -r requirements.txt
+python run.py
 ```
 
-## 运行
+Generates HTML file at `build/index.html`
 
-```bash
-python3 run.py
-```
+## Supported Chrome Switch Types
 
-This will download the latest Chrome source files, parse them, and generate an HTML file at `build/index.html`.
-
-## Features
-
-- **Chrome features**: Enable with `--enable-features`, disable with `--disable-features`
-- **Blink features**: Enable with `--enable-blink-features`, disable with `--disable-blink-features`  
-- **Blink settings**: Modify with `--blink-settings`
-- **Preferences**: JSON preferences in the Chrome profile
+- **Command Line Switches** - Various Chrome startup flags and options
+- **Chrome Features** - Enable: `--enable-features=FeatureName` / Disable: `--disable-features=FeatureName`
+- **Blink Features** - Enable: `--enable-blink-features=FeatureName` / Disable: `--disable-blink-features=FeatureName`  
+- **Blink Settings** - Configure: `--blink-settings=setting=value`
+- **Preferences** - JSON preferences in Chrome profile directory
