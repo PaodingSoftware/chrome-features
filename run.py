@@ -396,19 +396,30 @@ def parse_chrome_switches() -> List[Dict[str, Any]]:
     switches = []
     switches_dict = {}  # To track unique switches and avoid duplicates
     
-    # Parse from multiple namespace switches XML files
-    namespace_xml_files = [
+    # Dynamically discover all namespace XML files that contain switches
+    xml_dir = Path('xml')
+    namespace_xml_files = []
+    
+    # Find all namespace*switches*.xml files
+    switches_namespaces = list(xml_dir.glob('namespace*switches*.xml'))
+    
+    # Also include some core namespace files that might contain switches
+    core_namespaces = [
         'xml/namespaceswitches.xml',
-        'xml/namespaceheadless_1_1switches.xml',
         'xml/namespaceheadless.xml',
-        'xml/namespaceinput_1_1switches.xml',
         'xml/namespacesyncer.xml',
         'xml/namespaceembedder__support.xml'
     ]
     
-    if not any(Path(xml).exists() for xml in namespace_xml_files):
+    # Combine and deduplicate
+    all_files = [str(f) for f in switches_namespaces] + core_namespaces
+    namespace_xml_files = list(set(f for f in all_files if Path(f).exists()))
+    
+    if not namespace_xml_files:
         logger.warning("No namespace XML files found, skipping Chrome switches parsing")
         return switches
+    
+    logger.info(f"Found {len(namespace_xml_files)} namespace XML files to parse")
     
     try:
         # Get source mapping and load XML files
