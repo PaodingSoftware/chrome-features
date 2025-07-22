@@ -7,8 +7,11 @@ A tool to parse and display Chrome browser features, Blink features, and setting
 import sys
 import re
 import subprocess
+import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Dict, List, Optional, Union, Any
+from dataclasses import dataclass
 import requests
 import pyjson5
 import markdown
@@ -16,113 +19,153 @@ from jinja2 import Template
 from lxml import etree
 import html
 
+# Import configuration
+from config import (
+    CHROME_REPO_BASE_URL, TIMEOUT_SECONDS, DIRECTORIES, CORE_FILES, 
+    NAMESPACE_XML_FILES, CHROME_FEATURES_XML_FILES, DOXYGEN_CONFIG,
+    SOURCE_MAPPING_PATTERNS, SWITCHES_FILE, TEMPLATE_FILE, OUTPUT_FILE,
+    PREFS_XML_FILE, CONTENT_FEATURES_XML,
+    BLINK_FEATURES_JSON, BLINK_SETTINGS_JSON
+)
 
-def ensure_directories():
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+@dataclass
+class Feature:
+    """Represents a Chrome or Blink feature."""
+    name: str
+    enabled_default: bool = False
+    description: str = ""
+    
+@dataclass
+class Switch:
+    """Represents a Chrome command-line switch."""
+    name: str
+    description: str = ""
+    source: str = ""
+    variable: str = ""
+    sources: List[str] = None
+    
+    def __post_init__(self):
+        if self.sources is None:
+            self.sources = [self.source] if self.source else []
+
+@dataclass
+class Setting:
+    """Represents a Blink setting."""
+    name: str
+    initial: Union[str, bool, int] = ""
+    type: str = ""
+
+
+def ensure_directories() -> None:
     """Create necessary directories."""
-    for dir_name in ['src', 'xml', 'build']:
+    for dir_name in DIRECTORIES:
         Path(dir_name).mkdir(exist_ok=True)
+        logger.info(f"Ensured directory exists: {dir_name}")
 
 
-def clean_directories():
-    """Clean existing files."""
-    for dir_name in ['src', 'xml', 'build']:
+def clean_directories() -> None:
+    """Clean existing files (except src directory to preserve downloads)."""
+    for dir_name in ['xml', 'build']:
         dir_path = Path(dir_name)
         if dir_path.exists():
             for file in dir_path.glob('*'):
                 if file.is_file():
                     file.unlink()
+            logger.info(f"Cleaned directory: {dir_name}")
 
 
-def download_chrome_files():
-    """Download Chrome source files."""
-    files = [
-        # Chrome switches files
-        "chrome/common/chrome_switches.cc",
-        "chrome/common/chrome_switches.h",
-        "content/public/common/content_switches.cc",
-        "content/public/common/content_switches.h",
-        "gpu/config/gpu_switches.cc",
-        "gpu/config/gpu_switches.h",
-        "ui/base/ui_base_switches.cc",
-        "ui/base/ui_base_switches.h",
-        "media/base/media_switches.cc",
-        "media/base/media_switches.h",
-        "components/viz/common/switches.cc",
-        "components/viz/common/switches.h",
-        "ui/gl/gl_switches.cc",
-        "ui/gl/gl_switches.h",
-        "cc/base/switches.cc",
-        "cc/base/switches.h",
-        "ash/constants/ash_switches.cc",
-        "ash/constants/ash_switches.h",
-        "chromeos/constants/chromeos_switches.cc",
-        "chromeos/constants/chromeos_switches.h",
-        "extensions/common/switches.cc",
-        "extensions/common/switches.h",
-        "components/autofill/core/common/autofill_switches.cc",
-        "components/autofill/core/common/autofill_switches.h",
-        "components/network_session_configurator/common/network_switches.cc",
-        "components/network_session_configurator/common/network_switches.h",
-        "components/policy/core/common/policy_switches.cc",
-        "components/policy/core/common/policy_switches.h",
-        
-        # Chrome features files
-        "content/public/common/content_features.cc",
-        "third_party/blink/common/features.cc",
-        
-        # Blink features and settings files
-        "third_party/blink/renderer/platform/runtime_enabled_features.json5",
-        "third_party/blink/renderer/core/frame/settings.json5",
-        
-        # Preferences files
-        "chrome/common/pref_names.h",
-    ]
+def get_switches_files() -> List[str]:
+    """Read switches files from switches.txt."""
+    switches_files = []
+    try:
+        with open(SWITCHES_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and line.startswith('./'):
+                    # Remove ./ prefix and add to files list
+                    file_path = line[2:]
+                    switches_files.append(file_path)
+        logger.info(f"Loaded {len(switches_files)} switches files from {SWITCHES_FILE}")
+    except FileNotFoundError:
+        logger.warning(f"{SWITCHES_FILE} not found, using empty switches file list")
+    return switches_files
+
+
+def download_file(file_path: str) -> bool:
+    """Download a single file from Chrome repository."""
+    url = f"{CHROME_REPO_BASE_URL}/{file_path}"
+    filename = file_path.replace('/', '_')
+    local_path = Path('src') / filename
     
-    print("Downloading Chrome source files...")
+    # Skip download if file already exists
+    if local_path.exists():
+        logger.info(f"Skipped (already exists): {filename}")
+        return True
+    
+    try:
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        response.raise_for_status()
+        with open(local_path, 'w', encoding='utf-8') as f:
+            f.write(response.text)
+        logger.info(f"Downloaded: {filename}")
+        return True
+    except requests.RequestException as e:
+        logger.error(f"Error downloading {filename}: {e}")
+        return False
+
+
+def download_chrome_files() -> None:
+    """Download Chrome source files."""
+    switches_files = get_switches_files()
+    
+    files = switches_files + CORE_FILES
+    
+    logger.info(f"Downloading {len(files)} Chrome source files...")
+    successful_downloads = 0
+    
     for file_path in files:
-        url = f"https://raw.githubusercontent.com/chromium/chromium/main/{file_path}"
-        filename = file_path.replace('/', '_')
-        local_path = Path('src') / filename
-        
-        try:
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            with open(local_path, 'w', encoding='utf-8') as f:
-                f.write(response.text)
-            print(f"Downloaded: {filename}")
-        except requests.RequestException as e:
-            print(f"Error downloading {filename}: {e}")
-            sys.exit(1)
+        if download_file(file_path):
+            successful_downloads += 1
+    
+    logger.info(f"Downloaded {successful_downloads}/{len(files)} files successfully")
 
 
-def generate_doxygen_xml():
+def generate_doxygen_xml() -> bool:
     """Generate doxygen XML output."""
-    print("Generating Doxygen XML...")
-    doxygen_config = """
-GENERATE_HTML=NO
-GENERATE_LATEX=NO
-GENERATE_XML=YES
-QUIET=YES
-INPUT=src
-FILE_PATTERNS=*.cc,*.h
-"""
+    logger.info("Generating Doxygen XML...")
     
     try:
         proc = subprocess.Popen(['doxygen', '-'], stdin=subprocess.PIPE, 
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = proc.communicate(input=doxygen_config)
+        stdout, stderr = proc.communicate(input=DOXYGEN_CONFIG)
         
         if proc.returncode != 0:
-            print(f"Doxygen error: {stderr}")
+            logger.error(f"Doxygen error: {stderr}")
             return False
             
+        logger.info("Doxygen XML generation completed successfully")
         return True
     except FileNotFoundError:
-        print("Warning: doxygen not found. Chrome features parsing will be limited.")
+        logger.warning("doxygen not found. Chrome features parsing will be limited.")
         return False
 
 
-def get_description_from_xml(line_num, lines_element):
+def clean_comment_text(comment_xml: str) -> str:
+    """Clean and format comment text from XML."""
+    # Convert <sp/> tags to spaces and remove other XML tags
+    comment_text = re.sub(r'<sp/>', ' ', comment_xml)
+    comment_text = re.sub(r'<[^>]+>', '', comment_text)
+    # Clean up HTML entities
+    comment_text = html.unescape(comment_text)
+    comment_text = re.sub(r'^//', '', comment_text.strip())
+    return comment_text.strip()
+
+
+def get_description_from_xml(line_num: int, lines_element: List) -> List[str]:
     """Extract description from XML comments."""
     description = []
     current_line = line_num - 1
@@ -142,14 +185,9 @@ def get_description_from_xml(line_num, lines_element):
                 # Extract text while preserving spaces by processing XML content
                 # Use method='xml' to get the full XML including <sp/> tags
                 comment_xml = etree.tostring(highlights[0], method='xml', encoding='unicode')
-                # Convert <sp/> tags to spaces and remove other XML tags
-                comment_text = re.sub(r'<sp/>', ' ', comment_xml)
-                comment_text = re.sub(r'<[^>]+>', '', comment_text)
-                # Clean up HTML entities
-                comment_text = html.unescape(comment_text)
-                comment_text = re.sub(r'^//', '', comment_text.strip())
+                comment_text = clean_comment_text(comment_xml)
                 if comment_text:
-                    description.append(comment_text.strip())
+                    description.append(comment_text)
             else:
                 break
         else:
@@ -160,305 +198,370 @@ def get_description_from_xml(line_num, lines_element):
     return list(reversed(description))
 
 
-def parse_chrome_features():
+def parse_feature_from_memberdef(memberdef, lines_element: Optional[List]) -> Optional[Feature]:
+    """Parse a single feature from memberdef XML element."""
+    definition = memberdef.xpath('./definition/text()')
+    if not definition or (definition[0] != 'features::BASE_FEATURE' and 
+                         definition[0] != 'blink::features::BASE_FEATURE'):
+        return None
+    
+    # Extract feature name
+    param_types = memberdef.xpath('./param/type/text()')
+    if len(param_types) < 2:
+        return None
+        
+    name = param_types[1].strip('"')
+    enabled = len(param_types) > 2 and param_types[2] == 'base::FEATURE_ENABLED_BY_DEFAULT'
+    
+    # Get line number and description
+    location = memberdef.xpath('./location/@line')
+    line_num = int(location[0]) if location else 0
+    
+    description = []
+    if lines_element:
+        description = get_description_from_xml(line_num, lines_element)
+    
+    desc_text = ''
+    if description:
+        desc_text = markdown.markdown(html.escape('\n'.join(description)))
+    
+    return Feature(name=name, enabled_default=enabled, description=desc_text)
+
+
+def parse_chrome_features() -> List[Dict[str, Any]]:
     """Parse Chrome features from XML files."""
-    print("Parsing Chrome features...")
+    logger.info("Parsing Chrome features...")
     features = []
     
-    xml_files = [
-        'xml/namespacefeatures.xml',
-        'xml/namespaceblink_1_1features.xml'
-    ]
+    xml_files = CHROME_FEATURES_XML_FILES
     
     for xml_file in xml_files:
         if not Path(xml_file).exists():
-            print(f"XML file not found: {xml_file}, skipping Chrome features parsing")
+            logger.warning(f"XML file not found: {xml_file}, skipping")
             continue
             
         try:
             tree = etree.parse(xml_file)
             
             # Get the lines from the main content file for descriptions
-            content_xml = 'xml/content__public__common__content__features_8cc.xml'
             lines_element = None
-            if Path(content_xml).exists():
-                content_tree = etree.parse(content_xml)
+            if Path(CONTENT_FEATURES_XML).exists():
+                content_tree = etree.parse(CONTENT_FEATURES_XML)
                 lines_element = content_tree.xpath('//codeline')
             
             # Parse member definitions
             for memberdef in tree.xpath('//memberdef'):
-                definition = memberdef.xpath('./definition/text()')
-                if definition and (definition[0] == 'features::BASE_FEATURE' or 
-                                definition[0] == 'blink::features::BASE_FEATURE'):
-                    
-                    # Extract feature name
-                    param_types = memberdef.xpath('./param/type/text()')
-                    if len(param_types) >= 2:
-                        name = param_types[1].strip('"')
-                        enabled = len(param_types) > 2 and param_types[2] == 'base::FEATURE_ENABLED_BY_DEFAULT'
-                        
-                        # Get line number and description
-                        location = memberdef.xpath('./location/@line')
-                        line_num = int(location[0]) if location else 0
-                        
-                        description = []
-                        if lines_element:
-                            description = get_description_from_xml(line_num, lines_element)
-                        
-                        desc_text = ''
-                        if description:
-                            desc_text = markdown.markdown(html.escape('\n'.join(description)))
-                        
-                        features.append({
-                            'name': name,
-                            'enabled_default': enabled,
-                            'description': desc_text
-                        })
+                feature = parse_feature_from_memberdef(memberdef, lines_element)
+                if feature:
+                    features.append({
+                        'name': feature.name,
+                        'enabled_default': feature.enabled_default,
+                        'description': feature.description
+                    })
                         
         except etree.XMLSyntaxError as e:
-            print(f"Error parsing {xml_file}: {e}")
+            logger.error(f"Error parsing {xml_file}: {e}")
             continue
     
     # Sort features by name for consistent display
     features.sort(key=lambda x: x['name'].lower())
+    logger.info(f"Found {len(features)} Chrome features")
     
     return features
 
 
-def parse_chrome_switches():
-    """Parse Chrome switches from XML files."""
-    print("Parsing Chrome switches...")
-    switches = []
+def get_source_mapping() -> Dict[str, str]:
+    """Create source mapping from XML filenames to display names."""
+    source_mapping = {}
+    xml_dir = Path('xml')
     
-    # Parse from namespace switches XML (similar to parse_prefs approach)
-    namespace_xml = 'xml/namespaceswitches.xml'
-    if not Path(namespace_xml).exists():
-        print("XML file not found: namespaceswitches.xml, skipping Chrome switches parsing")
+    # Scan for all XML files that match switches pattern
+    for xml_file in xml_dir.glob('*switches*8*.xml'):
+        xml_name = xml_file.stem
+        src_name = xml_name.replace('_8cc', '.cc').replace('_8h', '.h')
+        src_name = src_name.replace('__', '/')
+        
+        # Find matching pattern
+        display_name = 'Other'
+        for pattern, name in SOURCE_MAPPING_PATTERNS.items():
+            if '|' in pattern:
+                # Handle regex patterns
+                if any(p in src_name for p in pattern.split('|')):
+                    display_name = name
+                    break
+            else:
+                if pattern in src_name:
+                    display_name = name
+                    break
+        
+        if display_name == 'Other':
+            # Fallback: extract meaningful name from path
+            parts = src_name.replace('/', ' ').replace('_', ' ').split()
+            display_name = ' '.join(word.capitalize() for word in parts if word not in ['switches', 'cc', 'h', 'common', 'public', 'core', 'base'])
+            if not display_name:
+                display_name = 'Other'
+        
+        src_key = src_name.replace('/', '_').replace('.', '_')
+        source_mapping[src_key] = display_name
+    
+    return source_mapping
+
+
+def load_xml_files_for_switches() -> Dict[str, List]:
+    """Load all XML files for switches parsing."""
+    all_lines_elements = {}
+    xml_dir = Path('xml')
+    
+    for xml_file in xml_dir.glob('*switches*8*.xml'):
+        xml_name = xml_file.stem
+        src_name = xml_name.replace('_8cc', '.cc').replace('_8h', '.h')
+        src_name = src_name.replace('__', '/')
+        
+        try:
+            content_tree = etree.parse(str(xml_file))
+            lines = content_tree.xpath('//codeline')
+            if lines:
+                all_lines_elements[src_name] = lines
+                logger.info(f"Loaded {len(lines)} code lines from {src_name}")
+        except Exception as e:
+            logger.error(f"Error loading {xml_file}: {e}")
+    
+    return all_lines_elements
+
+
+def parse_switch_from_memberdef(memberdef, all_lines_elements: Dict[str, List], 
+                               source_mapping: Dict[str, str]) -> Optional[Switch]:
+    """Parse a single switch from memberdef XML element."""
+    type_elem = memberdef.xpath('./type/text()')
+    if not type_elem or (type_elem[0] != 'const char' and type_elem[0] != 'char'):
+        return None
+    
+    name_elem = memberdef.xpath('./name/text()')
+    initializer = memberdef.xpath('./initializer/text()')
+    
+    if not name_elem or not initializer:
+        return None
+    
+    variable_name = name_elem[0]
+    init_text = initializer[0]
+    
+    # Extract switch name from initializer (format: = "switch-name")
+    if '"' not in init_text:
+        return None
+    
+    matches = re.findall(r'"([^"]+)"', init_text)
+    if not matches:
+        return None
+    
+    switch_name = matches[0]
+    
+    # Get location info for description
+    location_bodyfile = memberdef.xpath('./location/@bodyfile')
+    location_bodystart = memberdef.xpath('./location/@bodystart')
+    
+    description = []
+    desc_text = ''
+    
+    if location_bodyfile and location_bodystart:
+        file_path = location_bodyfile[0]
+        line_num = int(location_bodystart[0])
+        
+        # Find corresponding lines for descriptions
+        for src_key, lines in all_lines_elements.items():
+            if file_path.replace('src/', '').replace('/', '_').replace('.', '_') in src_key.replace('/', '_').replace('.', '_'):
+                description = get_description_from_xml(line_num, lines)
+                if description:
+                    desc_text = markdown.markdown(html.escape('\n'.join(description)))
+                break
+    
+    # Determine source based on file path using dynamic mapping
+    source = 'Other'
+    if location_bodyfile:
+        file_path = location_bodyfile[0].lower()
+        file_key = file_path.replace('src/', '').replace('/', '_').replace('.', '_')
+        
+        # Find matching source in our dynamic mapping
+        for key, src_name in source_mapping.items():
+            if key.replace('/', '_').replace('.', '_') in file_key:
+                source = src_name
+                break
+    
+    return Switch(name=switch_name, description=desc_text, source=source, 
+                 variable=variable_name, sources=[source])
+
+
+def parse_chrome_switches() -> List[Dict[str, Any]]:
+    """Parse Chrome switches from XML files."""
+    logger.info("Parsing Chrome switches...")
+    switches = []
+    switches_dict = {}  # To track unique switches and avoid duplicates
+    
+    # Parse from multiple namespace switches XML files
+    namespace_xml_files = [
+        'xml/namespaceswitches.xml',
+        'xml/namespaceheadless_1_1switches.xml',
+        'xml/namespaceheadless.xml',
+        'xml/namespaceinput_1_1switches.xml',
+        'xml/namespacesyncer.xml',
+        'xml/namespaceembedder__support.xml'
+    ]
+    
+    if not any(Path(xml).exists() for xml in namespace_xml_files):
+        logger.warning("No namespace XML files found, skipping Chrome switches parsing")
         return switches
     
     try:
-        tree = etree.parse(namespace_xml)
+        # Get source mapping and load XML files
+        source_mapping = get_source_mapping()
+        all_lines_elements = load_xml_files_for_switches()
         
-        # Get all switch source files for descriptions
-        switch_xml_files = {
-            'chrome_common_chrome_switches.cc': 'xml/chrome__common__chrome__switches_8cc.xml',
-            'chrome_common_chrome_switches.h': 'xml/chrome__common__chrome__switches_8h.xml',
-            'content_public_common_content_switches.cc': 'xml/content__public__common__content__switches_8cc.xml',
-            'content_public_common_content_switches.h': 'xml/content__public__common__content__switches_8h.xml',
-            'gpu_config_gpu_switches.cc': 'xml/gpu__config__gpu__switches_8cc.xml',
-            'gpu_config_gpu_switches.h': 'xml/gpu__config__gpu__switches_8h.xml',
-            'ui_base_ui_base_switches.cc': 'xml/ui__base__ui__base__switches_8cc.xml',
-            'ui_base_ui_base_switches.h': 'xml/ui__base__ui__base__switches_8h.xml',
-            'media_base_media_switches.cc': 'xml/media__base__media__switches_8cc.xml',
-            'media_base_media_switches.h': 'xml/media__base__media__switches_8h.xml',
-            'components_viz_common_switches.cc': 'xml/components__viz__common__switches_8cc.xml',
-            'components_viz_common_switches.h': 'xml/components__viz__common__switches_8h.xml',
-            'ui_gl_gl_switches.cc': 'xml/ui__gl__gl__switches_8cc.xml',
-            'ui_gl_gl_switches.h': 'xml/ui__gl__gl__switches_8h.xml',
-            'cc_base_switches.cc': 'xml/cc__base__switches_8cc.xml',
-            'cc_base_switches.h': 'xml/cc__base__switches_8h.xml',
-            'ash_constants_ash_switches.cc': 'xml/ash__constants__ash__switches_8cc.xml',
-            'ash_constants_ash_switches.h': 'xml/ash__constants__ash__switches_8h.xml',
-            'chromeos_constants_chromeos_switches.cc': 'xml/chromeos__constants__chromeos__switches_8cc.xml',
-            'chromeos_constants_chromeos_switches.h': 'xml/chromeos__constants__chromeos__switches_8h.xml',
-            'extensions_common_switches.cc': 'xml/extensions__common__switches_8cc.xml',
-            'extensions_common_switches.h': 'xml/extensions__common__switches_8h.xml',
-            'components_autofill_core_common_autofill_switches.cc': 'xml/components__autofill__core__common__autofill__switches_8cc.xml',
-            'components_autofill_core_common_autofill_switches.h': 'xml/components__autofill__core__common__autofill__switches_8h.xml',
-            'components_network_session_configurator_common_network_switches.cc': 'xml/components__network__session__configurator__common__network__switches_8cc.xml',
-            'components_network_session_configurator_common_network_switches.h': 'xml/components__network__session__configurator__common__network__switches_8h.xml',
-            'components_policy_core_common_policy_switches.cc': 'xml/components__policy__core__common__policy__switches_8cc.xml',
-            'components_policy_core_common_policy_switches.h': 'xml/components__policy__core__common__policy__switches_8h.xml'
-        }
+        logger.info(f"Found {len(source_mapping)} source mappings")
         
-        all_lines_elements = {}
-        for src_name, xml_path in switch_xml_files.items():
-            if Path(xml_path).exists():
-                try:
-                    content_tree = etree.parse(xml_path)
-                    lines = content_tree.xpath('//codeline')
-                    if lines:  # Only add if we found codelines
-                        all_lines_elements[src_name] = lines
-                        print(f"Loaded {len(lines)} code lines from {src_name}")
-                except Exception as e:
-                    print(f"Error loading {xml_path}: {e}")
-        
-        # Parse all member definitions from the namespace
-        for memberdef in tree.xpath('//memberdef'):
-            type_elem = memberdef.xpath('./type/text()')
-            if type_elem and type_elem[0] == 'const char':
-                name_elem = memberdef.xpath('./name/text()')
-                initializer = memberdef.xpath('./initializer/text()')
+        # Parse all member definitions from each namespace
+        for namespace_xml in namespace_xml_files:
+            if not Path(namespace_xml).exists():
+                continue
                 
-                if name_elem and initializer:
-                    variable_name = name_elem[0]
-                    init_text = initializer[0]
-                    
-                    # Extract switch name from initializer (format: = "switch-name")
-                    if '"' in init_text:
-                        matches = re.findall(r'"([^"]+)"', init_text)
-                        if matches:
-                            switch_name = matches[0]
-                            
-                            # Get location info for description
-                            location_bodyfile = memberdef.xpath('./location/@bodyfile')
-                            location_bodystart = memberdef.xpath('./location/@bodystart')
-                            
-                            description = []
-                            desc_text = ''
-                            
-                            if location_bodyfile and location_bodystart:
-                                file_path = location_bodyfile[0]
-                                line_num = int(location_bodystart[0])
-                                
-                                # Convert file path to source name key
-                                file_key = file_path.replace('src/', '').replace('/', '_').replace('.', '_')
-                                
-                                # Find corresponding lines for descriptions
-                                for src_key, lines in all_lines_elements.items():
-                                    if src_key.replace('.', '_') == file_key:
-                                        description = get_description_from_xml(line_num, lines)
-                                        if description:
-                                            desc_text = markdown.markdown(html.escape('\n'.join(description)))
-                                        break
-                            
-                            # Determine source based on file path
-                            source = 'Other'
-                            if location_bodyfile:
-                                file_path_lower = location_bodyfile[0].lower()
-                                if 'chrome' in file_path_lower and 'chrome_switches' in file_path_lower:
-                                    source = 'Chrome'
-                                elif 'content' in file_path_lower:
-                                    source = 'Content'
-                                elif 'gpu' in file_path_lower:
-                                    source = 'GPU'
-                                elif 'ui' in file_path_lower and 'ui_base' in file_path_lower:
-                                    source = 'UI'
-                                elif 'media' in file_path_lower:
-                                    source = 'Media'
-                                elif 'viz' in file_path_lower:
-                                    source = 'Viz'
-                                elif 'ui' in file_path_lower and 'gl' in file_path_lower:
-                                    source = 'UI/GL'
-                                elif 'cc_base' in file_path_lower:
-                                    source = 'CC'
-                                elif 'ash' in file_path_lower:
-                                    source = 'Ash'
-                                elif 'chromeos' in file_path_lower:
-                                    source = 'ChromeOS'
-                                elif 'extensions' in file_path_lower:
-                                    source = 'Extensions'
-                                elif 'autofill' in file_path_lower:
-                                    source = 'Autofill'
-                                elif 'network' in file_path_lower:
-                                    source = 'Network'
-                                elif 'policy' in file_path_lower:
-                                    source = 'Policy'
-                            
-                            switches.append({
-                                'name': switch_name,
-                                'description': desc_text,
-                                'source': source,
-                                'variable': variable_name
-                            })
+            tree = etree.parse(namespace_xml)
+            logger.info(f"Parsing switches from {namespace_xml}")
+            
+            # Parse all member definitions from the namespace
+            for memberdef in tree.xpath('//memberdef'):
+                switch = parse_switch_from_memberdef(memberdef, all_lines_elements, source_mapping)
+                if switch:
+                    # Only add if not already added (avoid duplicates)
+                    if switch.name not in switches_dict:
+                        switches_dict[switch.name] = {
+                            'name': switch.name,
+                            'description': switch.description,
+                            'source': switch.source,
+                            'variable': switch.variable,
+                            'sources': switch.sources.copy()
+                        }
+                        switches.append(switches_dict[switch.name])
+                    else:
+                        # If switch already exists, add this source to the list
+                        existing_switch = switches_dict[switch.name]
+                        if switch.source not in existing_switch['sources']:
+                            existing_switch['sources'].append(switch.source)
+                            # Update description if current one is longer/better
+                            if len(switch.description) > len(existing_switch['description']):
+                                existing_switch['description'] = switch.description
                         
     except etree.XMLSyntaxError as e:
-        print(f"Error parsing switches XML: {e}")
+        logger.error(f"Error parsing switches XML: {e}")
+    
+    # Convert sources list to comma-separated string for display
+    for switch in switches:
+        if 'sources' in switch and len(switch['sources']) > 1:
+            switch['source'] = ', '.join(sorted(switch['sources']))
     
     # Sort switches by name for consistent display
     switches.sort(key=lambda x: x['name'].lower())
     
-    print(f"Found {len(switches)} switches total")
+    unique_switches = len(set(s['name'] for s in switches))
+    logger.info(f"Found {len(switches)} switches total ({unique_switches} unique)")
     return switches
 
 
-def parse_blink_features():
+def parse_blink_features() -> List[Dict[str, Any]]:
     """Parse blink features from JSON5 files."""
-    print("Parsing Blink features...")
+    logger.info("Parsing Blink features...")
     
-    # Load blink features
-    with open('src/third_party_blink_renderer_platform_runtime_enabled_features.json5', 'r', encoding='utf-8') as f:
-        content = f.read()
-        blink_features = pyjson5.loads(content)
+    try:
+        # Load blink features
+        with open(BLINK_FEATURES_JSON, 'r', encoding='utf-8') as f:
+            content = f.read()
+            blink_features = pyjson5.loads(content)
+        
+        # Parse descriptions from comments
+        desc = []
+        features_data = blink_features.get('data', [])
+        
+        lines = content.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('//'):
+                desc.append(stripped[2:].strip())
+            elif desc and 'name:' in line and '"' in line:
+                # Extract feature name
+                name_match = re.search(r'name:\s*"([^"]+)"', line)
+                if name_match:
+                    feature_name = name_match.group(1)
+                    # Find the feature in data and add description
+                    for feature in features_data:
+                        if isinstance(feature, dict) and feature.get('name') == feature_name:
+                            if desc:
+                                feature['description'] = markdown.markdown(html.escape('\n'.join(desc)))
+                            break
+                desc = []
+            elif stripped != '{':
+                desc = []
+        
+        # Process features for template
+        processed_features = []
+        for feature in features_data:
+            if isinstance(feature, dict) and 'name' in feature:
+                processed_features.append({
+                    'name': feature['name'],
+                    'description': feature.get('description', ''),
+                    'enabled_default': feature.get('status') == 'stable'
+                })
+        
+        # Sort features by name for consistent display
+        processed_features.sort(key=lambda x: x['name'].lower())
+        logger.info(f"Found {len(processed_features)} Blink features")
+        
+        return processed_features
     
-    # Parse descriptions from comments
-    desc = []
-    features_data = blink_features.get('data', [])
-    
-    lines = content.split('\n')
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith('//'):
-            desc.append(stripped[2:].strip())
-        elif desc and 'name:' in line and '"' in line:
-            # Extract feature name
-            name_match = re.search(r'name:\s*"([^"]+)"', line)
-            if name_match:
-                feature_name = name_match.group(1)
-                # Find the feature in data and add description
-                for feature in features_data:
-                    if isinstance(feature, dict) and feature.get('name') == feature_name:
-                        if desc:
-                            feature['description'] = markdown.markdown(html.escape('\n'.join(desc)))
-                        break
-            desc = []
-        elif stripped != '{':
-            desc = []
-    
-    # Process features for template
-    processed_features = []
-    for feature in features_data:
-        if isinstance(feature, dict) and 'name' in feature:
-            processed_features.append({
-                'name': feature['name'],
-                'description': feature.get('description', ''),
-                'enabled_default': feature.get('status') == 'stable'
-            })
-    
-    # Sort features by name for consistent display
-    processed_features.sort(key=lambda x: x['name'].lower())
-    
-    return processed_features
+    except Exception as e:
+        logger.error(f"Error parsing Blink features: {e}")
+        return []
 
 
-def parse_blink_settings():
+def parse_blink_settings() -> List[Dict[str, Any]]:
     """Parse blink settings from JSON5 file."""
-    print("Parsing Blink settings...")
+    logger.info("Parsing Blink settings...")
     
-    with open('src/third_party_blink_renderer_core_frame_settings.json5', 'r', encoding='utf-8') as f:
-        blink_settings = pyjson5.loads(f.read())
+    try:
+        with open(BLINK_SETTINGS_JSON, 'r', encoding='utf-8') as f:
+            blink_settings = pyjson5.loads(f.read())
+        
+        processed_settings = []
+        for setting in blink_settings.get('data', []):
+            if isinstance(setting, dict) and 'name' in setting:
+                initial_val = setting.get('initial')
+                if isinstance(initial_val, str) and initial_val.startswith("'") and initial_val.endswith("'"):
+                    initial_val = initial_val[1:-1]
+                    
+                processed_settings.append({
+                    'name': setting['name'],
+                    'initial': initial_val,
+                    'type': setting.get('type', '')
+                })
+        
+        # Sort settings by name for consistent display
+        processed_settings.sort(key=lambda x: x['name'].lower())
+        logger.info(f"Found {len(processed_settings)} Blink settings")
+        
+        return processed_settings
     
-    processed_settings = []
-    for setting in blink_settings.get('data', []):
-        if isinstance(setting, dict) and 'name' in setting:
-            initial_val = setting.get('initial')
-            if isinstance(initial_val, str) and initial_val.startswith("'") and initial_val.endswith("'"):
-                initial_val = initial_val[1:-1]
-                
-            processed_settings.append({
-                'name': setting['name'],
-                'initial': initial_val,
-                'type': setting.get('type', '')
-            })
-    
-    # Sort settings by name for consistent display
-    processed_settings.sort(key=lambda x: x['name'].lower())
-    
-    return processed_settings
+    except Exception as e:
+        logger.error(f"Error parsing Blink settings: {e}")
+        return []
 
 
-def parse_prefs():
+def parse_prefs() -> Dict[str, Any]:
     """Parse Chrome preferences from XML."""
-    print("Parsing preferences...")
+    logger.info("Parsing preferences...")
     prefs = {}
     
-    xml_file = 'xml/namespaceprefs.xml'
-    if not Path(xml_file).exists():
-        print("XML file not found: namespaceprefs.xml, skipping preferences parsing")
+    if not Path(PREFS_XML_FILE).exists():
+        logger.warning(f"XML file not found: {PREFS_XML_FILE}, skipping preferences parsing")
         return prefs
     
     try:
-        tree = etree.parse(xml_file)
+        tree = etree.parse(PREFS_XML_FILE)
         
         for memberdef in tree.xpath('//memberdef'):
             type_elem = memberdef.xpath('./type/text()')
@@ -483,68 +586,90 @@ def parse_prefs():
                         # Set final key
                         if keys:
                             current_dict[keys[-1]] = ""
+        
+        logger.info(f"Found {len(prefs)} preference categories")
                             
     except etree.XMLSyntaxError as e:
-        print(f"Error parsing prefs XML: {e}")
+        logger.error(f"Error parsing prefs XML: {e}")
     
     return prefs
 
 
-def generate_html(chrome_switches, chrome_features, blink_features, blink_settings, prefs):
+def generate_html(chrome_switches: List[Dict[str, Any]], chrome_features: List[Dict[str, Any]], 
+                 blink_features: List[Dict[str, Any]], blink_settings: List[Dict[str, Any]], 
+                 prefs: Dict[str, Any]) -> None:
     """Generate HTML using Jinja2 template."""
-    print("Generating HTML...")
+    logger.info("Generating HTML...")
     
-    with open('template.html', 'r', encoding='utf-8') as f:
-        template_content = f.read()
+    try:
+        with open(TEMPLATE_FILE, 'r', encoding='utf-8') as f:
+            template_content = f.read()
+        
+        template = Template(template_content)
+        
+        html_output = template.render(
+            chrome_switches=chrome_switches,
+            chrome_features=chrome_features,
+            blink_features=blink_features,
+            blink_settings=blink_settings,
+            prefs=prefs,
+            current_date=datetime.now().strftime('%Y-%m-%d')
+        )
+        
+        with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+            f.write(html_output)
+        
+        logger.info(f"HTML generated successfully at {OUTPUT_FILE}")
     
-    template = Template(template_content)
-    
-    html_output = template.render(
-        chrome_switches=chrome_switches,
-        chrome_features=chrome_features,
-        blink_features=blink_features,
-        blink_settings=blink_settings,
-        prefs=prefs,
-        current_date=datetime.now().strftime('%Y-%m-%d')
-    )
-    
-    with open('build/index.html', 'w', encoding='utf-8') as f:
-        f.write(html_output)
-    
-    print("HTML generated successfully at build/index.html")
+    except Exception as e:
+        logger.error(f"Error generating HTML: {e}")
+        raise
 
 
-def main():
-    """Main function."""
-    print("Chrome Features Parser")
-    print("=====================")
-    
-    # Setup
-    ensure_directories()
-    clean_directories()
-    
-    # Download and process
-    download_chrome_files()
-    has_doxygen = generate_doxygen_xml()
-    
-    # Parse data
-    chrome_switches = parse_chrome_switches() if has_doxygen else []
-    chrome_features = parse_chrome_features() if has_doxygen else []
-    blink_features = parse_blink_features()
-    blink_settings = parse_blink_settings()
-    prefs = parse_prefs() if has_doxygen else {}
-    
-    # Generate output
-    generate_html(chrome_switches, chrome_features, blink_features, blink_settings, prefs)
-    
-    print("Processing Summary:")
-    print(f"- {len(chrome_switches)} Chrome switches")
-    print(f"- {len(chrome_features)} Chrome features")
-    print(f"- {len(blink_features)} Blink features")
-    print(f"- {len(blink_settings)} Blink settings")
+def print_processing_summary(chrome_switches: List, chrome_features: List, 
+                           blink_features: List, blink_settings: List, 
+                           has_doxygen: bool) -> None:
+    """Print processing summary."""
+    logger.info("Processing Summary:")
+    logger.info(f"- {len(chrome_switches)} Chrome switches")
+    logger.info(f"- {len(chrome_features)} Chrome features")
+    logger.info(f"- {len(blink_features)} Blink features")
+    logger.info(f"- {len(blink_settings)} Blink settings")
     if not has_doxygen:
-        print("Note: Install doxygen to enable Chrome features and preferences parsing")
-    print("Done!")
+        logger.warning("Note: Install doxygen to enable Chrome features and preferences parsing")
+    logger.info("Processing completed successfully!")
+
+
+def main() -> None:
+    """Main function."""
+    logger.info("Chrome Features Parser")
+    logger.info("=" * 50)
+    
+    try:
+        # Setup
+        ensure_directories()
+        clean_directories()
+        
+        # Download and process
+        download_chrome_files()
+        has_doxygen = generate_doxygen_xml()
+        
+        # Parse data
+        chrome_switches = parse_chrome_switches() if has_doxygen else []
+        chrome_features = parse_chrome_features() if has_doxygen else []
+        blink_features = parse_blink_features()
+        blink_settings = parse_blink_settings()
+        prefs = parse_prefs() if has_doxygen else {}
+        
+        # Generate output
+        generate_html(chrome_switches, chrome_features, blink_features, blink_settings, prefs)
+        
+        # Print summary
+        print_processing_summary(chrome_switches, chrome_features, blink_features, blink_settings, has_doxygen)
+        
+    except Exception as e:
+        logger.error(f"An error occurred during processing: {e}")
+        sys.exit(1)
 
 
 if __name__ == '__main__':
