@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chrome features</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1/css/bulma.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/list.js@2/dist/list.min.js"></script>
+</head>
+
+<body>
+    <section class="section">
+        <div class="container is-fluid">
+            <input class="input is-large" type="text" placeholder="Type to search settings..." id="search">
+            <hr>
+        </div>
+
+        <!-- Chrome Switches Section -->
+        <div class="container is-fluid">
+            <h1 class="title">Chrome switches</h1>
+            <p class="subtitle">
+                Command line switches for Chrome browser:
+            </p>
+            <table class="table is-bordered is-striped is-narrow is-hoverable is-fullwidth">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Source</th>
+                    </tr>
+                </thead>
+                <tbody class="list">
+                    {% for switch in chrome_switches %}
+                    <tr data-description="{{ switch.description if switch.description else '' }}">
+                        <td class="name">--{{ switch.name }}</td>
+                        <td>
+                            {% if switch.description %}
+                            <pre>{{ switch.description | safe }}</pre>
+                            {% else %}
+                            &mdash;
+                            {% endif %}
+                        </td>
+                        <td>{{ switch.source }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Chrome Features Section -->
+        <div class="container is-fluid">
+            <h1 class="title">Chrome features</h1>
+            <p class="subtitle">
+                Enable with <code>--enable-features</code>, disable with <code>--disable-features</code>:
+            </p>
+            <table class="table is-bordered is-striped is-narrow is-hoverable is-fullwidth">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Enabled by default</th>
+                    </tr>
+                </thead>
+                <tbody class="list">
+                    {% for feature in chrome_features %}
+                    <tr data-description="{{ feature.description if feature.description else '' }}">
+                        <td class="name">{{ feature.name }}</td>
+                        <td>
+                            {% if feature.description %}
+                            <pre>{{ feature.description | safe }}</pre>
+                            {% else %}
+                            &mdash;
+                            {% endif %}
+                        </td>
+                        <td>{{ '✅' if feature.enabled_default else '❌' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Blink Features Section -->
+        <div class="container is-fluid">
+            <h1 class="title">Blink features</h1>
+            <p class="subtitle">
+                Enable with <code>--enable-blink-features</code>, disable with <code>--disable-blink-features</code>:
+            </p>
+            <table class="table is-bordered is-striped is-narrow is-hoverable is-fullwidth">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Enabled by default</th>
+                    </tr>
+                </thead>
+                <tbody class="list">
+                    {% for feature in blink_features %}
+                    <tr data-description="{{ feature.description if feature.description else '' }}">
+                        <td class="name">{{ feature.name }}</td>
+                        <td>
+                            {% if feature.description %}
+                            <pre>{{ feature.description | safe }}</pre>
+                            {% else %}
+                            &mdash;
+                            {% endif %}
+                        </td>
+                        <td>{{ '✅' if feature.enabled_default else '❌' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Blink Settings Section -->
+        <div class="container is-fluid">
+            <h1 class="title">Blink settings</h1>
+            <p class="subtitle">
+                Modify with <code>--blink-settings</code>:
+            </p>
+            <table class="table is-bordered is-striped is-narrow is-hoverable is-fullwidth">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Default</th>
+                        <th>Type</th>
+                    </tr>
+                </thead>
+                <tbody class="list">
+                    {% for setting in blink_settings %}
+                    <tr>
+                        <td class="name">{{ setting.name }}</td>
+                        <td>{{ setting.initial if setting.initial is not none else '&mdash;' | safe }}</td>
+                        <td>{{ setting.type if setting.type else '&mdash;' | safe }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Preferences Section -->
+        <div class="container is-fluid">
+            <h1 class="title">Preferences</h1>
+            <p class="subtitle">
+                The following JSON preferences can be modified in the <code>Preferences</code> file in the profile:
+            </p>
+            <pre>{{ prefs | tojson(indent=2) }}</pre>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="content has-text-centered">
+            <p>
+                <strong>Updated</strong>: {{ current_date }}. For the source code, see the <a
+                    href="https://github.com/Niek/chrome-features">GitHub repo</a>.
+            </p>
+        </div>
+    </footer>
+
+    <script>
+        // Wait until the DOM is fully loaded
+        document.addEventListener("DOMContentLoaded", function () {
+            // Initialize List.js for each table
+            var lists = [];
+
+            // Find all containers with tables and initialize List.js for each
+            const containers = document.querySelectorAll('.container.is-fluid');
+            containers.forEach((container, index) => {
+                const table = container.querySelector('table');
+                if (table) {
+                    // Create a wrapper div for List.js if it doesn't exist
+                    let listContainer = container;
+
+                    const list = new List(listContainer, {
+                        valueNames: ['name'],
+                        listClass: 'list'
+                    });
+                    lists.push(list);
+                }
+            });
+
+            // Filter all tables based on the search input
+            const updateSearch = () => {
+                const search = document.querySelector('#search').value.toLowerCase().trim();
+
+                if (!search) {
+                    // If no search term, show all items
+                    lists.forEach(list => {
+                        list.search();
+                    });
+                } else {
+                    lists.forEach(list => {
+                        list.filter((item) => {
+                            const nameElement = item.elm.querySelector('.name');
+                            const name = nameElement ? nameElement.textContent.toLowerCase() : '';
+                            const description = item.elm.getAttribute('data-description');
+                            const descText = description ? description.toLowerCase() : '';
+
+                            // Search in name (remove -- prefix for switches when searching)
+                            const cleanName = name.startsWith('--') ? name.substring(2) : name;
+                            const nameMatch = cleanName.includes(search) || name.includes(search);
+
+                            // Search in description
+                            const descMatch = descText.includes(search);
+
+                            return nameMatch || descMatch;
+                        });
+                    });
+                }
+
+                // Update the URL with the search query using the history API
+                const url = new URL(document.location.toString());
+                if (search) {
+                    url.searchParams.set('q', search);
+                } else {
+                    url.searchParams.delete('q');
+                }
+                history.pushState({}, '', url.toString());
+            }
+
+            // Update the search when the input changes
+            document.querySelector('#search').addEventListener('input', updateSearch);
+            document.querySelector('#search').addEventListener('keyup', updateSearch);
+
+            // Update the search when the page is loaded
+            const url = new URL(document.location.toString());
+            if (url.searchParams.has('q')) {
+                document.querySelector('#search').value = url.searchParams.get('q');
+                updateSearch();
+            }
+        });
+    </script>
+</body>
+
+</html>
