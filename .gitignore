@@ -1,7 +1,6 @@
 # Temporary directories and downloaded files
 xml/
 src/
-build/
 
 # Downloaded source files
 *.cc
@@ -14,7 +13,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
 develop-eggs/
 dist/
 downloads/
@@ -48,6 +46,5 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Old PHP files (kept for reference)
-vendor/
-composer.lock
+# Obsidian
+.obsidian/

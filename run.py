@@ -685,10 +685,6 @@ def generate_obsidian_switches_review(chrome_switches: List[Dict[str, Any]]) -> 
                 clean_desc = clean_desc.replace('\n', ' ').replace('\r', '').strip()
                 clean_desc = clean_desc.replace('|', '\\|')  # Escape pipe characters
                 
-                # Limit description length for readability
-                if len(clean_desc) > 100:
-                    clean_desc = clean_desc[:97] + "..."
-                
                 # Generate unique checkbox ID
                 checkbox_id = f"switch_{checkbox_counter:04d}"
                 checkbox_counter += 1
